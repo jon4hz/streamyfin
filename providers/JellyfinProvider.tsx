@@ -24,6 +24,11 @@ import uuid from "react-native-uuid";
 import { useInterval } from "@/hooks/useInterval";
 import { JellyseerrApi, useJellyseerr } from "@/hooks/useJellyseerr";
 import { useSettings } from "@/utils/atoms/settings";
+import {
+  getOIDCProviders,
+  initiateOIDCLogin,
+  type OIDCProvider,
+} from "@/utils/jellyfin/oidc";
 import { writeErrorLog, writeInfoLog } from "@/utils/log";
 import { storage } from "@/utils/mmkv";
 import { store } from "@/utils/store";
@@ -43,6 +48,8 @@ interface JellyfinContextValue {
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   initiateQuickConnect: () => Promise<string | undefined>;
+  getOIDCProviders: () => Promise<OIDCProvider[]>;
+  loginWithOIDC: (providerName: string) => Promise<void>;
 }
 
 const JellyfinContext = createContext<JellyfinContextValue | undefined>(
@@ -146,6 +153,9 @@ export const JellyfinProvider: React.FC<{ children: ReactNode }> = ({
           setUser(User);
           storage.set("token", AccessToken);
           storage.set("user", JSON.stringify(User));
+
+          // Store quickconnect authentication method
+          setAuthMethodInStorage("quickconnect");
           return true;
         }
       }
@@ -236,6 +246,8 @@ export const JellyfinProvider: React.FC<{ children: ReactNode }> = ({
           setApi(jellyfin.createApi(api?.basePath, auth.data?.AccessToken));
           storage.set("token", auth.data?.AccessToken);
 
+          // Store password authentication method
+          setAuthMethodInStorage("password");
           const recentPluginSettings = await refreshStreamyfinPluginSettings();
           if (recentPluginSettings?.jellyseerrServerUrl?.value) {
             const jellyseerrApi = new JellyseerrApi(
@@ -303,6 +315,64 @@ export const JellyfinProvider: React.FC<{ children: ReactNode }> = ({
     },
   });
 
+  // OIDC Methods
+  const getOIDCProvidersFunction = useCallback(async (): Promise<
+    OIDCProvider[]
+  > => {
+    if (!api) throw new Error("API not initialized");
+    return await getOIDCProviders(api);
+  }, [api]);
+
+  const loginWithOIDC = useCallback(
+    async (providerName: string): Promise<void> => {
+      if (!api || !jellyfin) throw new Error("API not initialized");
+
+      try {
+        const result = await initiateOIDCLogin(api, providerName, deviceId);
+
+        if (result.success && result.accessToken && result.user) {
+          setUser(result.user);
+          storage.set("user", JSON.stringify(result.user));
+          setApi(jellyfin.createApi(api.basePath, result.accessToken));
+          storage.set("token", result.accessToken);
+
+          // Store OIDC authentication details
+          setAuthMethodInStorage("oidc");
+          setOIDCProviderInStorage(providerName);
+
+          // Refresh plugin settings after successful login
+          const recentPluginSettings = await refreshStreamyfinPluginSettings();
+          if (recentPluginSettings?.jellyseerrServerUrl?.value) {
+            // Auto-login to Jellyseerr if configured
+            const jellyseerrApi = new JellyseerrApi(
+              recentPluginSettings.jellyseerrServerUrl.value,
+            );
+            await jellyseerrApi.test().then((testResult) => {
+              if (
+                testResult.isValid &&
+                testResult.requiresPass &&
+                result.user?.Name
+              ) {
+                // Note: For OIDC, we don't have the password, so Jellyseerr auto-login
+                // would need to be configured to work with OIDC tokens or be disabled
+              }
+            });
+          }
+        } else {
+          throw new Error(result.error || "OIDC authentication failed");
+        }
+      } catch (error) {
+        console.error("OIDC login failed:", error);
+        if (error instanceof Error) {
+          throw error;
+        } else {
+          throw new Error("Unknown OIDC authentication error");
+        }
+      }
+    },
+    [api, jellyfin, deviceId, refreshStreamyfinPluginSettings],
+  );
+
   const [loaded, setLoaded] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
 
@@ -350,6 +420,8 @@ export const JellyfinProvider: React.FC<{ children: ReactNode }> = ({
       loginMutation.mutateAsync({ username, password }),
     logout: () => logoutMutation.mutateAsync(),
     initiateQuickConnect,
+    getOIDCProviders: getOIDCProvidersFunction,
+    loginWithOIDC,
   };
 
   useEffect(() => {
@@ -423,4 +495,31 @@ export function getOrSetDeviceId(): string {
   }
 
   return deviceId;
+}
+
+// OIDC-specific storage helpers
+export function getAuthMethodFromStorage():
+  | "password"
+  | "quickconnect"
+  | "oidc"
+  | null {
+  return storage.getString("authMethod") as
+    | "password"
+    | "quickconnect"
+    | "oidc"
+    | null;
+}
+
+export function setAuthMethodInStorage(
+  method: "password" | "quickconnect" | "oidc",
+): void {
+  storage.set("authMethod", method);
+}
+
+export function getOIDCProviderFromStorage(): string | null {
+  return storage.getString("oidcProvider") || null;
+}
+
+export function setOIDCProviderInStorage(provider: string): void {
+  storage.set("oidcProvider", provider);
 }

@@ -20,6 +20,7 @@ import { Button } from "@/components/Button";
 import { Input } from "@/components/common/Input";
 import { Text } from "@/components/common/Text";
 import JellyfinServerDiscovery from "@/components/JellyfinServerDiscovery";
+import { OIDCLoginButtons } from "@/components/OIDCLoginButtons";
 import { PreviousServersList } from "@/components/PreviousServersList";
 import { Colors } from "@/constants/Colors";
 import { apiAtom, useJellyfin } from "@/providers/JellyfinProvider";
@@ -39,7 +40,13 @@ const Login: React.FC = () => {
     apiUrl: _apiUrl,
     username: _username,
     password: _password,
-  } = params as { apiUrl: string; username: string; password: string };
+    oidcError: _oidcError,
+  } = params as {
+    apiUrl: string;
+    username: string;
+    password: string;
+    oidcError: string;
+  };
 
   const [loadingServerCheck, setLoadingServerCheck] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
@@ -72,6 +79,13 @@ const Login: React.FC = () => {
       }
     })();
   }, [_apiUrl, _username, _password]);
+
+  // Handle OIDC errors
+  useEffect(() => {
+    if (_oidcError) {
+      Alert.alert(t("login.error_title"), t("login.oidc_login_failed"));
+    }
+  }, [_oidcError]);
 
   useEffect(() => {
     navigation.setOptions({
@@ -227,6 +241,17 @@ const Login: React.FC = () => {
                   )}
                 </Text>
                 <Text className='text-xs text-neutral-400'>{api.basePath}</Text>
+
+                {/* OIDC Login Options */}
+                <OIDCLoginButtons
+                  onLoginSuccess={() => {
+                    // Login success is handled by the provider
+                  }}
+                  onLoginError={(error) => {
+                    console.error("OIDC login error:", error);
+                  }}
+                />
+
                 <Input
                   placeholder={t("login.username_placeholder")}
                   onChangeText={(text) =>
